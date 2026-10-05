@@ -1,0 +1,47 @@
+Subject: [PATCH] tuxedo_compatibility_check: allow GIGABYTE DMI vendor
+
+GIGABYTE gaming laptops (G6 KF and relatives) are rebranded Clevo
+barebones. They expose the Clevo WMI interface GUIDs
+(ABBC0F6B/6C/6D-8EA1-11D1-00A0-C90629100000), so the clevo_wmi /
+clevo_acpi / tuxedo_keyboard drivers are the correct drivers for the
+keyboard backlight.
+
+However tuxedo_is_compatible() only accepts DMI vendor "TUXEDO", or a CPU
+on the legacy skip-list (nothing newer than roughly Intel 12th gen). A
+GIGABYTE DMI vendor with a modern CPU fails both checks, so
+tuxedo_keyboard aborts with -ENODEV and the RGB keyboard stays dark.
+
+Add GIGABYTE to the DMI allow-list. This is an explicit per-vendor opt-in
+rather than a blanket bypass of the compatibility check.
+
+Tested on: GIGABYTE G6 KF (2024), SKU RC56KF, BIOS FD10,
+Intel Core i7-13620H, Ubuntu 26.04, tuxedo-drivers 4.24.0.
+
+Signed-off-by: devansh0703 <devansh0703@users.noreply.github.com>
+
+diff --git a/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c b/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
+index ec6fd1a..d3f014b 100644
+--- a/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
++++ b/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
+@@ -216,6 +216,21 @@ static const struct dmi_system_id tuxedo_dmi_string_match[] = {
+ 			DMI_MATCH(DMI_CHASSIS_VENDOR, "TUXEDO"),
+ 		},
+ 	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "GIGABYTE"),
++		},
++	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_BOARD_VENDOR, "GIGABYTE"),
++		},
++	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_CHASSIS_VENDOR, "GIGABYTE"),
++		},
++	},
+ 	{ }
+ };
+ 

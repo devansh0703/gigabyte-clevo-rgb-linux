@@ -1,0 +1,4 @@
+# Allow the 'video' group to control the Clevo/TUXEDO 1-zone RGB keyboard
+# backlight exposed on GIGABYTE G6 KF laptops (via tuxedo_keyboard driver).
+# Without this the sysfs attributes are root-only.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="rgb:kbd_backlight", RUN+="/usr/bin/env chown root:video /sys%p/brightness /sys%p/multi_intensity", RUN+="/usr/bin/env chmod 0664 /sys%p/brightness /sys%p/multi_intensity"

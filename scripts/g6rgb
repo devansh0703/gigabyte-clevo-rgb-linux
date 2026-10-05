@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# g6rgb - control the GIGABYTE G6 KF (Clevo barebone) 1-zone RGB keyboard
+# backlight via the tuxedo_keyboard LED interface.
+#
+# Usage:
+#   g6rgb on                 # full brightness, keep current colour
+#   g6rgb off                # brightness 0
+#   g6rgb <r> <g> <b>        # set colour 0-255 (also raises brightness to max)
+#   g6rgb red|green|blue|white|cyan|magenta|yellow|orange|purple
+#   g6rgb bright <0-255>     # set brightness only
+#   g6rgb status             # show current state
+#   g6rgb cycle              # cycle through the standard colours
+#
+# Needs write access to /sys/class/leds/rgb:kbd_backlight/* (run with sudo,
+# or add a udev rule granting the 'video' group access).
+
+set -euo pipefail
+
+LED="/sys/class/leds/rgb:kbd_backlight"
+BRIGHT="$LED/brightness"
+INTENSITY="$LED/multi_intensity"
+
+if [[ ! -e "$LED" ]]; then
+    echo "error: $LED not found." >&2
+    echo "Is the driver loaded?  Try:  sudo modprobe clevo_wmi" >&2
+    exit 1
+fi
+
+set_color() {
+    echo 255 > "$BRIGHT"
+    echo "$1 $2 $3" > "$INTENSITY"
+}
+
+case "${1:-status}" in
+    on)
+        echo 255 > "$BRIGHT"
+        ;;
+    off)
+        echo 0 > "$BRIGHT"
+        ;;
+    bright)
+        echo "${2:?brightness 0-255 required}" > "$BRIGHT"
+        ;;
+    status)
+        printf 'brightness: %s\ncolour:     %s\n' \
+            "$(cat "$BRIGHT")" "$(cat "$INTENSITY")"
+        ;;
+    cycle)
+        for c in red green blue yellow magenta cyan white; do
+            "$0" "$c"
+            sleep 1
+        done
+        ;;
+    red)     set_color 255 0 0 ;;
+    green)   set_color 0 255 0 ;;
+    blue)    set_color 0 0 255 ;;
+    white)   set_color 255 255 255 ;;
+    cyan)    set_color 0 255 255 ;;
+    magenta) set_color 255 0 255 ;;
+    yellow)  set_color 255 255 0 ;;
+    orange)  set_color 255 128 0 ;;
+    purple)  set_color 128 0 255 ;;
+    [0-9]*)
+        set_color "${1:?}" "${2:?}" "${3:?}"
+        ;;
+    *)
+        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+        exit 1
+        ;;
+esac
