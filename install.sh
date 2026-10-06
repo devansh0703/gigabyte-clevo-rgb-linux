@@ -150,24 +150,47 @@ grep -q 'DMI_MATCH(DMI_SYS_VENDOR, "GIGABYTE")' "$TARGET" || die "patch verifica
 step "Preparing DKMS module"
 INSTALL_DIR="/usr/src/tuxedo-drivers-$ACTUAL_VERSION"
 
-cat > dkms.conf <<EOF
-PACKAGE_NAME="tuxedo-drivers"
-PACKAGE_VERSION="$ACTUAL_VERSION"
-BUILT_MODULE_NAME[0]="clevo_acpi"
-BUILT_MODULE_NAME[1]="clevo_wmi"
-BUILT_MODULE_NAME[2]="tuxedo_keyboard"
-BUILT_MODULE_NAME[3]="uniwill_wmi"
-BUILT_MODULE_LOCATION[0]="src/"
-BUILT_MODULE_LOCATION[1]="src/"
-BUILT_MODULE_LOCATION[2]="src/"
-BUILT_MODULE_LOCATION[3]="src/"
-DEST_MODULE_LOCATION[0]="/kernel/drivers/platform/x86"
-DEST_MODULE_LOCATION[1]="/kernel/drivers/platform/x86"
-DEST_MODULE_LOCATION[2]="/kernel/drivers/platform/x86"
-DEST_MODULE_LOCATION[3]="/kernel/drivers/platform/x86"
-MAKE="make KDIR=/lib/modules/\${kernelver}/build"
-AUTOINSTALL="yes"
-EOF
+# Upstream ships no dkms.conf. Enumerate every module the Kbuild files declare,
+# with the directory it is built in, so DKMS installs all of them — not just the
+# keyboard ones. Missing tuxedo_compatibility_check breaks tuxedo_keyboard with
+# "Unknown symbol tuxedo_is_compatible".
+: > dkms.conf
+{
+    printf 'PACKAGE_NAME="tuxedo-drivers"\n'
+    printf 'PACKAGE_VERSION="%s"\n' "$ACTUAL_VERSION"
+} >> dkms.conf
+
+i=0
+while IFS='|' read -r mod loc; do
+    [[ -n "$mod" ]] || continue
+    printf 'BUILT_MODULE_NAME[%d]="%s"\n'     "$i" "$mod" >> dkms.conf
+    printf 'BUILT_MODULE_LOCATION[%d]="%s"\n' "$i" "$loc" >> dkms.conf
+    printf 'DEST_MODULE_LOCATION[%d]="/kernel/drivers/platform/x86"\n' "$i" >> dkms.conf
+    i=$((i + 1))
+done < <(
+    # We are already inside the source root, so scan from ".".
+    while read -r kb; do
+        d="$(dirname "$kb")"           # e.g. "." or "./src/ite_8291"
+        rel="${d#./}"                  # -> "" or "src/ite_8291"
+        rel="${rel#/}"
+        if [[ "$rel" == "." ]]; then
+            rel=""
+        elif [[ -n "$rel" ]]; then
+            rel="$rel/"
+        fi
+        # Root Kbuild has only obj-y (no obj-m), and the trailing `grep -v '^$'`
+        # exits 1 on empty input. Under `set -o pipefail` that aborts the whole
+        # enumeration, so the entire pipeline must be failure-tolerant.
+        { grep -oP '^\s*obj-m\s*\+?=\s*\K.*' "$kb" 2>/dev/null \
+            | tr ' ' '\n' | sed 's/\.o$//' | grep -v '^$' || true; } \
+            | while read -r m; do printf '%s|%s\n' "$m" "$rel"; done
+    done < <(find . -name Kbuild | sort)
+)
+printf 'MAKE="make KDIR=/lib/modules/${kernelver}/build"\n' >> dkms.conf
+printf 'AUTOINSTALL="yes"\n' >> dkms.conf
+
+echo "declared $i modules in dkms.conf"
+grep -c 'BUILT_MODULE_NAME' dkms.conf | xargs -I{} echo "  ({} BUILT_MODULE_NAME entries)"
 
 dkms remove -m tuxedo-drivers -v "$ACTUAL_VERSION" --all >/dev/null 2>&1 || true
 rm -rf "$INSTALL_DIR"
@@ -188,15 +211,44 @@ for m in clevo_acpi clevo_wmi uniwill_wmi tuxedo_io tuxedo_keyboard tuxedo_compa
 done
 
 # clevo_wmi is the module that pulls in tuxedo_keyboard
-modprobe clevo_wmi || die "modprobe clevo_wmi failed — check 'dmesg | tail'"
+modprobe clevo_wmi || {
+    c_red "modprobe clevo_wmi failed."
+    c_red "dmesg tail:"
+    dmesg | tail -5 | sed 's/^/    /'
+    die "see the errors above"
+}
 
 if [[ ! -e /sys/class/leds/rgb:kbd_backlight ]]; then
-    c_red "driver loaded but /sys/class/leds/rgb:kbd_backlight was not created."
-    c_red "This can mean the keyboard type reported by the EC is unrecognised."
-    c_red "Run 'sudo dmesg | grep -i tuxedo' and open an issue with the output."
+    c_red "Driver loaded but /sys/class/leds/rgb:kbd_backlight was not created."
+    c_red "This usually means the EC reports a keyboard type the driver does not"
+    c_red "recognise. Run 'sudo dmesg | grep -i tuxedo' and open an issue with the output."
     exit 1
 fi
 c_grn "keyboard backlight LED registered"
+
+# ---------------------------------------------------------------- verify reboot-safe
+step "Verifying the install survives a reboot"
+
+# Every module the running kernel has loaded from our package must be installed
+# on disk, or it will be missing at next boot.
+MISSING=0
+for m in $(lsmod | awk '{print $1}' | grep -E '^(clevo|tuxedo|uniwill)'); do
+    if ! modinfo "$m" >/dev/null 2>&1; then
+        c_red "module '$m' is loaded but has no on-disk copy — it will be missing after reboot"
+        MISSING=1
+    fi
+done
+if [[ $MISSING -eq 1 ]]; then
+    die "incomplete module install; do NOT reboot before fixing this"
+fi
+
+# The autoload list must name modules that actually exist.
+while read -r m; do
+    [[ -n "$m" && "$m" != \#* ]] || continue
+    modinfo "$m" >/dev/null 2>&1 || die "autoload entry '$m' does not exist on disk"
+done < "$SCRIPT_DIR/modules-load.d/tuxedo-keyboard.conf"
+
+c_grn "all loaded modules have on-disk copies; autoload entries are valid"
 
 # ---------------------------------------------------------------- persistence
 step "Installing boot autoload + udev rule + CLI"
